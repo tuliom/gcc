@@ -1197,6 +1197,7 @@ new_loop_vec_info (struct loop *loop)
   LOOP_VINFO_PEELING_FOR_NITER (res) = false;
   LOOP_VINFO_OPERANDS_SWAPPED (res) = false;
   LOOP_VINFO_ORIG_LOOP_INFO (res) = NULL;
+  LOOP_VINFO_ADDR_CACHE (res) = NULL;
 
   return res;
 }
@@ -1309,6 +1310,9 @@ destroy_loop_vec_info (loop_vec_info loop_vinfo, bool clean_stmts)
 
   destroy_cost_data (LOOP_VINFO_TARGET_COST_DATA (loop_vinfo));
   loop_vinfo->scalar_cost_vec.release ();
+
+  delete LOOP_VINFO_ADDR_CACHE (loop_vinfo);
+  LOOP_VINFO_ADDR_CACHE (loop_vinfo) = NULL;
 
   release_vec_loop_masks (&LOOP_VINFO_MASKS (loop_vinfo));
 
