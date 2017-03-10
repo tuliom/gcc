@@ -49,6 +49,10 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
   && !defined (__rtems__) \
   && (defined (__LONG_DOUBLE_128__) || defined (__FLOAT128_TYPE__))
 
+typedef _Bool bool;
+#define false 0
+#define true 1
+
 #define fabs(x) __builtin_fabs(x)
 #define isless(x, y) __builtin_isless (x, y)
 #define inf() __builtin_inf()
@@ -98,7 +102,59 @@ __asm__ (".symver __gcc_qadd,_xlqadd@GCC_3.4\n\t"
 	 ".symver .__gcc_qdiv,._xlqdiv@GCC_3.4");
 #endif
 
-/* Combine two 'double' values into one 'IBM128_TYPE' and return the result.  */
+#define FE_TONEAREST 0
+
+/* Set the rounding mode to MODE, returning the previous mode.  */
+
+static int
+swapround (int mode)
+{
+  int old_mode;
+#ifdef __NO_FPRS__
+# ifdef _SOFT_FLOAT
+  /* Not implemented.  */
+  old_mode = FE_TONEAREST;
+# else
+  /* SPE floating point.  */
+  int spefscr;
+  asm volatile ("mfspefscr %0" : "=r" (spefscr));
+  old_mode = spefscr & 3;
+  spefscr = (spefscr & ~3) | mode;
+  asm volatile ("mtspefscr %0" : : "r" (spefscr));
+# endif
+#else
+  /* Logic as in glibc.  */
+  asm volatile ("mcrfs 7,7\n\t"
+		"mfcr %0" : "=r" (old_mode) : : "cr7");
+  old_mode &= 3;
+  if ((mode ^ old_mode) & 2)
+    {
+      if (mode & 2)
+	asm volatile ("mtfsb1 30");
+      else
+	asm volatile ("mtfsb0 30");
+    }
+  if ((mode ^ old_mode) & 1)
+    {
+      if (mode & 1)
+	asm volatile ("mtfsb1 31");
+      else
+	asm volatile ("mtfsb0 31");
+    }
+#endif
+  return old_mode;
+}
+
+/* Overflowing values in each rounding mode (FE_TONEAREST,
+   FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD).  */
+
+static const long double overflow_values[2][4] =
+  {
+    { __builtin_infl (), __LDBL_MAX__, __builtin_infl (), __LDBL_MAX__ },
+    { -__builtin_infl (), -__LDBL_MAX__, -__LDBL_MAX__, -__builtin_infl () }
+  };
+
+/* Combine two 'double' values into one 'long double' and return the result.  */
 static inline IBM128_TYPE
 pack_ldouble (double dh, double dl)
 {
@@ -121,40 +177,74 @@ pack_ldouble (double dh, double dl)
 IBM128_TYPE
 __gcc_qadd (double a, double aa, double c, double cc)
 {
-  double xh, xl, z, q, zz;
+  double xh, xhs, xl, z, q, zz;
+  bool scale = false;
+  int old_mode;
+
+  if (nonfinite (a) || nonfinite (c))
+    return a + c;
+
+  old_mode = swapround (FE_TONEAREST);
+
+  if (fabs (a) >= 0x1p1022 || fabs (c) >= 0x1p1022)
+    {
+      scale = true;
+      if (fabs (a) >= 0x1p914)
+	{
+	  a *= 0.5;
+	  aa *= 0.5;
+	}
+      if (fabs (c) >= 0x1p914)
+	{
+	  c *= 0.5;
+	  cc *= 0.5;
+	}
+    }
 
   z = a + c;
+  q = a - z;
+  zz = q + c + (a - (q + z)) + aa + cc;
 
-  if (nonfinite (z))
+  /* Keep -0 result.  */
+  if (zz == 0.0)
     {
-      if (fabs (z) != inf())
-	return z;
-      z = cc + aa + c + a;
-      if (nonfinite (z))
-	return z;
-      xh = z;  /* Will always be DBL_MAX.  */
-      zz = aa + cc;
-      if (fabs(a) > fabs(c))
-	xl = a - z + c + zz;
-      else
-	xl = c - z + a + zz;
+      double ret = scale ? 2.0 * z : z;
+      if (unlikely (old_mode != FE_TONEAREST))
+	{
+	  swapround (old_mode);
+	  if (fabs (ret) == inf ())
+	    return overflow_values[ret < 0][old_mode];
+	  if (ret == 0)
+	    {
+	      asm volatile ("" : "+m" (a));
+	      ret = a + c;
+	    }
+	}
+      return ret;
     }
-  else
+  xh = z + zz;
+  xhs = xh;
+  if (scale)
+    xhs *= 2.0;
+  if (nonfinite (xhs))
     {
-      q = a - z;
-      zz = q + c + (a - (q + z)) + aa + cc;
-
-      /* Keep -0 result.  */
-      if (zz == 0.0)
-	return z;
-
-      xh = z + zz;
-      if (nonfinite (xh))
-	return xh;
-
-      xl = z - xh + zz;
+      if (unlikely (old_mode != FE_TONEAREST))
+	{
+	  swapround (old_mode);
+	  if (fabs (xhs) == inf ())
+	    return overflow_values[xhs < 0][old_mode];
+	}
+      return xhs;
     }
-  return pack_ldouble (xh, xl);
+
+  xl = z - xh + zz;
+  if (scale)
+    xl *= 2.0;
+
+  if (unlikely (old_mode != FE_TONEAREST))
+    swapround (old_mode);
+
+  return pack_ldouble (xhs, xl);
 }
 
 IBM128_TYPE
@@ -170,13 +260,41 @@ static double fmsub (double, double, double);
 IBM128_TYPE
 __gcc_qmul (double a, double b, double c, double d)
 {
-  double xh, xl, t, tau, u, v, w;
+  double xh, xl, t, tau, u, us, v, w;
+  bool scale = false;
+  int old_mode;
+
+  if (nonfinite (a) || nonfinite (c))
+    return a * c;
+
+  old_mode = swapround (FE_TONEAREST);
+
+  if (fabs (a) >= 0x1p512)
+    {
+      scale = true;
+      a *= 0.5;
+      b *= 0.5;
+    }
+  else if (fabs (c) >= 0x1p512)
+    {
+      scale = true;
+      c *= 0.5;
+      d *= 0.5;
+    }
   
   t = a * c;			/* Highest order double term.  */
 
   if (unlikely (t == 0)		/* Preserve -0.  */
       || nonfinite (t))
-    return t;
+    {
+      if (unlikely (old_mode != FE_TONEAREST))
+	{
+	  swapround (old_mode);
+	  if (fabs (t) == inf ())
+	    return overflow_values[t < 0][old_mode];
+	}
+      return t;
+    }
 
   /* Sum terms of two highest orders. */
   
@@ -190,25 +308,70 @@ __gcc_qmul (double a, double b, double c, double d)
   w = b*c;
   tau += v + w;	    /* Add in other second-order terms.	 */
   u = t + tau;
+  us = u;
+  if (scale)
+    us *= 2.0;
 
   /* Construct IBM128_TYPE result.  */
-  if (nonfinite (u))
-    return u;
-  xh = u;
+  if (nonfinite (us))
+    {
+      if (unlikely (old_mode != FE_TONEAREST))
+	{
+	  swapround (old_mode);
+	  if (fabs (us) == inf ())
+	    return overflow_values[us < 0][old_mode];
+	}
+      return us;
+    }
+  xh = us;
   xl = (t - u) + tau;
+  if (scale)
+    xl *= 2.0;
+
+  if (unlikely (old_mode != FE_TONEAREST))
+    swapround (old_mode);
+
   return pack_ldouble (xh, xl);
 }
 
 IBM128_TYPE
 __gcc_qdiv (double a, double b, double c, double d)
 {
-  double xh, xl, s, sigma, t, tau, u, v, w;
+  double xh, xl, s, sigma, t, tau, u, us, v, w;
+  bool scale = false;
+  int old_mode;
+
+  if (nonfinite (a) || nonfinite (c) || c == 0)
+    return a / c;
+
+  old_mode = swapround (FE_TONEAREST);
+
+  if (fabs (a) >= 0x1p512)
+    {
+      scale = true;
+      a *= 0.5;
+      b *= 0.5;
+    }
+  else if (fabs (c) <= 0x1p-511)
+    {
+      scale = true;
+      c *= 2.0;
+      d *= 2.0;
+    }
   
   t = a / c;                    /* highest order double term */
   
   if (unlikely (t == 0)		/* Preserve -0.  */
       || nonfinite (t))
-    return t;
+    {
+      if (unlikely (old_mode != FE_TONEAREST))
+	{
+	  swapround (old_mode);
+	  if (fabs (t) == inf ())
+	    return overflow_values[t < 0][old_mode];
+	}
+      return t;
+    }
 
   /* Finite nonzero result requires corrections to the highest order
      term.  These corrections require the low part of c * t to be
@@ -235,12 +398,29 @@ __gcc_qdiv (double a, double b, double c, double d)
   
   tau = ((v-sigma)+w)/c;   /* Correction to t.  */
   u = t + tau;
+  us = u;
+  if (scale)
+    us *= 2.0;
 
   /* Construct IBM128_TYPE result.  */
-  if (nonfinite (u))
-    return u;
-  xh = u;
+  if (nonfinite (us))
+    {
+      if (unlikely (old_mode != FE_TONEAREST))
+	{
+	  swapround (old_mode);
+	  if (fabs (us) == inf ())
+	    return overflow_values[us < 0][old_mode];
+	}
+      return us;
+    }
+  xh = us;
   xl = (t - u) + tau;
+  if (scale)
+    xl *= 2.0;
+
+  if (unlikely (old_mode != FE_TONEAREST))
+    swapround (old_mode);
+
   return pack_ldouble (xh, xl);
 }
 
