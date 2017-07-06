@@ -2,6 +2,7 @@
    in one pass together with normal local variables.  */
 /* { dg-do compile } */
 /* { dg-options "-O0 -fomit-frame-pointer" } */
+/* { dg-options "-O0 -fomit-frame-pointer -mregparm=3" { target { { i?86-*-* x86_64-*-* } && ia32 } } } */
 /* { dg-require-effective-target ptr32plus } */
 
 extern void bar (void *, void *, void *);
@@ -12,4 +13,6 @@ void foo (void)
   __attribute__ ((aligned(32768))) char runtime_aligned_2[1024];
   bar (&i, &runtime_aligned_1, &runtime_aligned_2);
 }
-/* { dg-final { scan-assembler-not "cfi_def_cfa_register" } } */
+/* { dg-final { scan-assembler-not "cfi_escape" { target i?86-*-* x86_64-*-* } } } */
+/* { dg-final { scan-assembler-not "cfi_def_cfa_register" { target { ! { { i?86-*-* } || { x86_64-*-* } } } } } } */
+/* { dg-final { scan-assembler "cfi_def_cfa_register" { target i?86-*-* x86_64-*-* } } } */
