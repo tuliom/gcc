@@ -107,6 +107,12 @@ if test "${GOOS}" = "aix"; then
     nsig=`expr $nsig + 1`
 else
     nsig=`grep 'const _*NSIG = [0-9]*$' gen-sysinfo.go | sed -e 's/.* = \([0-9]*\)/\1/'`
+    if test "$nsig" = ""; then
+	nsig=`grep 'const ___SIGRTMAX = [0-9]*$' gen-sysinfo.go | sed -e 's/.* = \([0-9]*\)/\1/'`
+	if test "$nsig" != ""; then
+	    nsig=`expr "$nsig" + 1`
+	fi
+    fi
 fi
 
 i=1
