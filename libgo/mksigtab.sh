@@ -85,7 +85,28 @@ if test "${GOOS}" = "linux"; then
     echo '	33: {_SigSetStack + _SigUnblock, "signal 33"}, /* SIGSETXID; see issues 3871, 9400, 12498 */'
 fi
 
-nsig=`grep 'const _*NSIG = [0-9]*$' gen-sysinfo.go | sed -e 's/.* = \([0-9]*\)/\1/'`
+if test "${GOOS}" = "aix"; then
+    # _NSIG = _NSIG32/_NSIG64 and _NSIG* = _SIGMAX* + 1
+    bits=`grep 'const _NSIG = _NSIG[0-9]*$' gen-sysinfo.go | sed -e 's/.* = _NSIG\([0-9]*\)/\1/'`
+    nsig=`grep "const _SIGMAX$bits = [0-9]*$" gen-sysinfo.go | sed -e 's/.* = \([0-9]*\)/\1/'`
+    nsig=`expr $nsig + 1`
+else
+    nsig=`grep 'const _*NSIG = [0-9]*$' gen-sysinfo.go | sed -e 's/.* = \([0-9]*\)/\1/'`
+    if test -z "$nsig"; then
+	if grep 'const _*NSIG = [ (]*_*SIGRTMAX + 1[ )]*' gen-sysinfo.go >/dev/null; then
+	    rtmax=`grep 'const _*SIGRTMAX = [0-9]*$' gen-sysinfo.go | sed -e 's/.* = \([0-9]*\)/\1/'`
+	    if test -n "$rtmax"; then
+		nsig=`expr $rtmax + 1`
+	    fi
+	fi
+    fi
+fi
+
+if test -z "$nsig"; then
+    echo 1>&2 "could not determine number of signals"
+    exit 1
+fi
+
 i=1
 while test "$i" -lt "$nsig"; do
     if ! grep "const _SIG.* = $i" gen-sysinfo.go >/dev/null 2>&1; then
