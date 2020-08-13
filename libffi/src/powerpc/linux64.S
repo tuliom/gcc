@@ -89,7 +89,7 @@ ffi_call_LINUX64:
 	/* Call ffi_prep_args64.  */
 	mr	%r4, %r1
 # if defined _CALL_LINUX || _CALL_ELF == 2
-	bl	ffi_prep_args64
+	bl	ffi_prep_args64@notoc
 # else
 	bl	.ffi_prep_args64
 # endif

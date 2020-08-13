@@ -155,7 +155,7 @@ ffi_closure_LINUX64:
 
 	# make the call
 # if defined _CALL_LINUX || _CALL_ELF == 2
-	bl ffi_closure_helper_LINUX64
+	bl ffi_closure_helper_LINUX64@notoc
 # else
 	bl .ffi_closure_helper_LINUX64
 # endif
